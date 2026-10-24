@@ -1,23 +1,24 @@
 from flask import Flask, request
-import joblib, pandas as pd
+import joblib, pandas as pd, sqlite3
 app = Flask(__name__)
 model = joblib.load("model.pkl")
-df = pd.read_csv("patients.csv").set_index("patient_id")
+con = sqlite3.connect("pulmo.db", check_same_thread=False)
 
 @app.route("/")
 def home():
-    pid = request.args.get("id")
-    page = '<h2>PulmoCheck</h2><form>Patient ID (1-1000): <input name="id"><button>Predict</button></form>'
-    if pid and pid.isdigit() and int(pid) in df.index:
-        p = df.loc[int(pid)]
-        risk = model.predict(p[model.feature_names_in_].astype(float).to_frame().T)[0]
-        yn = lambda v: "Yes" if v else "No"
-        why = [t for c, t in [(p.smoker, "Smokes"), (p.drinks, "Drinks alcohol"), (p.lung_issue, f"Past lung issue: {p.history}"),
-                              (p.cough_days > 10, f"Cough for {p.cough_days} days"), (p.oxygen < 92, f"Low oxygen ({p.oxygen}%)")] if c]
-        page += f"<p>Gender: {'Male' if p.gender else 'Female'} | Age: {p.age} | Smoker: {yn(p.smoker)} | Drinks: {yn(p.drinks)}<br>History: {p.history} | Cough: {p.cough_days} days | Oxygen: {p.oxygen}%</p>"
-        page += f"<h3>{'High risk' if risk else 'Low risk'}</h3><b>Risk factors:</b><ul>{''.join(f'<li>{w}</li>' for w in why) or '<li>None</li>'}</ul>"
-    elif pid:
-        page += "<p>Patient not found</p>"
+    pid = request.args.get("id", "").strip().upper()
+    page = '<h2>PulmoCheck</h2><form>Patient ID (P1 - P1000): <input name="id"><button>Predict</button></form>'
+    if pid:
+        row = pd.read_sql('SELECT * FROM patients WHERE "Patient Id" = ?', con, params=(pid,))
+        if row.empty:
+            return page + "<p>Patient not found</p>"
+        p = row.iloc[0]
+        X = p[model.feature_names_in_].astype(float).to_frame().T
+        risk, conf = model.predict(X)[0], model.predict_proba(X).max()
+        why = [f"{c} (score {p[c]})" for c in model.feature_names_in_ if c not in ("Age", "Gender") and p[c] >= 6]
+        page += f"<p>Patient {pid} | Age: {p.Age} | Gender: {'Male' if p.Gender == 1 else 'Female'}</p>"
+        page += f"<h3>{risk} risk ({conf:.0%} confidence)</h3><b>High-scoring factors:</b><ul>{''.join(f'<li>{w}</li>' for w in why) or '<li>None</li>'}</ul>"
     return page
 
-app.run()
+if __name__ == "__main__":
+    app.run()
